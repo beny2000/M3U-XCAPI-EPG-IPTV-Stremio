@@ -864,7 +864,7 @@ async function createAddon(config) {
                                 }
                                 if (!db.getTMDBStreams(provKey, directMovie.tmdb_id)) {
                                     db.setTMDBStreams(provKey, directMovie.tmdb_id, 'movie', {
-                                        streams: [{ url: directMovie.url, title: directMovie.name }]
+                                        streams: [{ url: directMovie.url, title: directMovie.name, behaviorHints: { notWebReady: true } }]
                                     });
                                 }
                             }
@@ -889,7 +889,9 @@ async function createAddon(config) {
                         const memMovies = addonInstance.movies.filter(m => m.tmdb_id === tmdbId);
                         if (memMovies.length > 0) {
                             addonInstance.log.debug('Stream: in-memory tmdb_id fallback', tmdbId, memMovies.length);
-                            return { streams: memMovies.map(m => ({ url: m.url, title: m.name, behaviorHints: { notWebReady: true } })) };
+                            const streams = memMovies.map(m => ({ url: m.url, title: m.name, behaviorHints: { notWebReady: true } }));
+                            db.setTMDBStreams(providerKey, tmdbId, 'movie', { streams });
+                            return { streams };
                         }
                     }
 
