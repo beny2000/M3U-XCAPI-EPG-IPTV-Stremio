@@ -308,7 +308,8 @@
             "series",
             true,
           );
-        } catch {
+        } catch (sErr) {
+          appendDetail(`⚠ Series browser fetch failed: ${sErr.message}`);
           seriesJsonText = await robustFetch(
             `${base}&action=get_series`,
             "series",

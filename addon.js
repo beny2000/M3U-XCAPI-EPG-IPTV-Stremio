@@ -850,11 +850,24 @@ async function createAddon(config) {
                         episode = parseInt(parts[2], 10);
                     }
 
-                    // Fast path: direct imdb_id match in memory (no TMDB API key needed)
+                    // Fast path: direct imdb_id match in memory (no TMDB API key needed).
+                    // When tmdb_id is present we backfill SQLite so the entry survives a restart.
+                    // Items with imdb_id but no tmdb_id are not backfilled and require TMDB_API_KEY after restart.
                     if (!season) {
                         const directMovie = addonInstance.movies.find(m => m.imdb_id === imdbId);
                         if (directMovie) {
                             addonInstance.log.debug('Stream: direct imdb_id match', imdbId, directMovie.id);
+                            if (directMovie.tmdb_id) {
+                                const provKey = db.createProviderKey(addonInstance.config);
+                                if (!db.getIMDBtoTMDB(provKey, imdbId)) {
+                                    db.setIMDBtoTMDB(provKey, imdbId, directMovie.tmdb_id);
+                                }
+                                if (!db.getTMDBStreams(provKey, directMovie.tmdb_id)) {
+                                    db.setTMDBStreams(provKey, directMovie.tmdb_id, 'movie', {
+                                        streams: [{ url: directMovie.url, title: directMovie.name }]
+                                    });
+                                }
+                            }
                             return { streams: [{ url: directMovie.url, title: directMovie.name, behaviorHints: { notWebReady: true } }] };
                         }
                     }
@@ -871,12 +884,12 @@ async function createAddon(config) {
                     const providerKey = db.createProviderKey(addonInstance.config);
                     let streamData = db.getTMDBStreams(providerKey, tmdbId);
 
-                    // In-memory tmdb_id fallback when SQLite cache is cold
+                    // In-memory tmdb_id fallback when SQLite cache is cold — return all matches
                     if (!streamData && !season) {
-                        const memMovie = addonInstance.movies.find(m => m.tmdb_id === tmdbId);
-                        if (memMovie) {
-                            addonInstance.log.debug('Stream: in-memory tmdb_id fallback', tmdbId, memMovie.id);
-                            return { streams: [{ url: memMovie.url, title: memMovie.name, behaviorHints: { notWebReady: true } }] };
+                        const memMovies = addonInstance.movies.filter(m => m.tmdb_id === tmdbId);
+                        if (memMovies.length > 0) {
+                            addonInstance.log.debug('Stream: in-memory tmdb_id fallback', tmdbId, memMovies.length);
+                            return { streams: memMovies.map(m => ({ url: m.url, title: m.name, behaviorHints: { notWebReady: true } })) };
                         }
                     }
 
