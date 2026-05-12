@@ -1,4 +1,6 @@
 const Database = require('better-sqlite3');
+const _DB_DEBUG = (process.env.DEBUG_MODE || '').toLowerCase() === 'true';
+function _dblog(...a) { if (_DB_DEBUG) console.log('[SQLITE]', ...a); }
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
@@ -47,10 +49,12 @@ function getDb() {
 function getIMDBtoTMDB(providerKey, imdbId) {
     const stmt = getDb().prepare('SELECT tmdb_id FROM imdb_tmdb WHERE provider_key = ? AND imdb_id = ?');
     const row = stmt.get(providerKey, imdbId);
+    _dblog('getIMDBtoTMDB', imdbId, '->', row ? `HIT tmdb=${row.tmdb_id}` : 'MISS');
     return row ? row.tmdb_id : null;
 }
 
 function setIMDBtoTMDB(providerKey, imdbId, tmdbId) {
+    _dblog('setIMDBtoTMDB', imdbId, '->', tmdbId);
     const stmt = getDb().prepare(`
         INSERT OR REPLACE INTO imdb_tmdb (provider_key, imdb_id, tmdb_id, created_at)
         VALUES (?, ?, ?, strftime('%s', 'now'))
@@ -61,6 +65,7 @@ function setIMDBtoTMDB(providerKey, imdbId, tmdbId) {
 function getTMDBStreams(providerKey, tmdbId) {
     const stmt = getDb().prepare('SELECT type, data FROM tmdb_streams WHERE provider_key = ? AND tmdb_id = ?');
     const row = stmt.get(providerKey, tmdbId);
+    _dblog('getTMDBStreams', `tmdb=${tmdbId}`, '->', row ? `HIT type=${row.type}` : 'MISS');
     if (!row) return null;
     return {
         type: row.type,
@@ -69,6 +74,7 @@ function getTMDBStreams(providerKey, tmdbId) {
 }
 
 function setTMDBStreams(providerKey, tmdbId, type, data) {
+    _dblog('setTMDBStreams', `tmdb=${tmdbId}`, `type=${type}`);
     const stmt = getDb().prepare(`
         INSERT OR REPLACE INTO tmdb_streams (provider_key, tmdb_id, type, data, updated_at)
         VALUES (?, ?, ?, ?, strftime('%s', 'now'))
