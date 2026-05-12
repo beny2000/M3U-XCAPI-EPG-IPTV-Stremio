@@ -5,6 +5,34 @@
 // episodes are transformed into Stremio 'videos' (season/episode).
 const fetch = require("node-fetch");
 
+const _XP_DEBUG = (process.env.DEBUG_MODE || "").toLowerCase() === "true";
+function _xlog(...a) { if (_XP_DEBUG) console.log("[XTREAM]", ...a); }
+
+function safeUrl(url) {
+  try {
+    const u = new URL(url);
+    u.searchParams.delete("password");
+    u.searchParams.delete("passwd");
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
+async function timedFetch(url, opts, label) {
+  if (!_XP_DEBUG) return fetch(url, opts);
+  const t0 = Date.now();
+  _xlog("→", label || "fetch", safeUrl(url));
+  try {
+    const resp = await fetch(url, opts);
+    _xlog("←", label || "fetch", resp.status, `${Date.now() - t0}ms`);
+    return resp;
+  } catch (e) {
+    _xlog("✖", label || "fetch", `${Date.now() - t0}ms`, e.message);
+    throw e;
+  }
+}
+
 async function fetchData(addonInstance) {
   const { config } = addonInstance;
   const {
@@ -31,10 +59,10 @@ async function fetchData(addonInstance) {
       `&password=${encodeURIComponent(xtreamPassword)}` +
       `&type=m3u_plus` +
       (xtreamOutput ? `&output=${encodeURIComponent(xtreamOutput)}` : "");
-    const resp = await fetch(url, {
+    const resp = await timedFetch(url, {
       timeout: 30000,
       headers: { "User-Agent": "Stremio M3U/EPG Addon (xtreamProvider/m3u)" },
-    });
+    }, "m3u");
     if (!resp.ok) throw new Error("Xtream M3U fetch failed");
     const text = await resp.text();
     const items = addonInstance.parseM3U(text);
@@ -72,20 +100,17 @@ async function fetchData(addonInstance) {
     const base = `${xtreamUrl}/player_api.php?username=${encodeURIComponent(xtreamUsername)}&password=${encodeURIComponent(xtreamPassword)}`;
     // Fetch streams + category lists in parallel to map category_id -> category_name
     const [liveResp, vodResp, liveCatsResp, vodCatsResp] = await Promise.all([
-      fetch(`${base}&action=get_live_streams`, { timeout: 30000 }),
-      fetch(`${base}&action=get_vod_streams`, { timeout: 30000 }),
-      fetch(`${base}&action=get_live_categories`, { timeout: 20000 }).catch(
-        () => null,
-      ),
-      fetch(`${base}&action=get_vod_categories`, { timeout: 20000 }).catch(
-        () => null,
-      ),
+      timedFetch(`${base}&action=get_live_streams`, { timeout: 30000 }, "live_streams"),
+      timedFetch(`${base}&action=get_vod_streams`, { timeout: 30000 }, "vod_streams"),
+      timedFetch(`${base}&action=get_live_categories`, { timeout: 20000 }, "live_categories").catch(() => null),
+      timedFetch(`${base}&action=get_vod_categories`, { timeout: 20000 }, "vod_categories").catch(() => null),
     ]);
 
     if (!liveResp.ok) throw new Error("Xtream live streams fetch failed");
     if (!vodResp.ok) throw new Error("Xtream VOD streams fetch failed");
     const live = await liveResp.json();
     const vod = await vodResp.json();
+    _xlog("live streams:", Array.isArray(live) ? live.length : 0, "vod streams:", Array.isArray(vod) ? vod.length : 0);
 
     let liveCatMap = {};
     let vodCatMap = {};
@@ -146,9 +171,10 @@ async function fetchData(addonInstance) {
         plot: s.plot,
         year: s.releasedate ? new Date(s.releasedate).getFullYear() : null,
         category: cat,
-                tmdb_id: s.tmdb || null,
-                stream_id: s.stream_id,
-                container_extension: s.container_extension,
+        tmdb_id: s.tmdb_id ? (parseInt(s.tmdb_id, 10) || null) : (s.tmdb ? (parseInt(s.tmdb, 10) || null) : null),
+        imdb_id: s.imdb_id || null,
+        stream_id: s.stream_id,
+        container_extension: s.container_extension,
         attributes: {
           "tvg-logo": s.stream_icon,
           "group-title": cat,
@@ -160,10 +186,8 @@ async function fetchData(addonInstance) {
     if (config.includeSeries !== false) {
       try {
         const [seriesResp, seriesCatsResp] = await Promise.all([
-          fetch(`${base}&action=get_series`, { timeout: 35000 }),
-          fetch(`${base}&action=get_series_categories`, {
-            timeout: 20000,
-          }).catch(() => null),
+          timedFetch(`${base}&action=get_series`, { timeout: 35000 }, "get_series"),
+          timedFetch(`${base}&action=get_series_categories`, { timeout: 20000 }, "series_categories").catch(() => null),
         ]);
         let seriesCatMap = {};
         try {
@@ -193,7 +217,8 @@ async function fetchData(addonInstance) {
                 poster: s.cover,
                 plot: s.plot,
                 category: cat,
-                                tmdb_id: s.tmdb || null,
+                tmdb_id: s.tmdb_id ? (parseInt(s.tmdb_id, 10) || null) : (s.tmdb ? (parseInt(s.tmdb, 10) || null) : null),
+                imdb_id: s.imdb_id || null,
                 attributes: {
                   "tvg-logo": s.cover,
                   "group-title": cat,
@@ -201,10 +226,11 @@ async function fetchData(addonInstance) {
                 },
               };
             });
+            _xlog("series:", addonInstance.series.length);
           }
         }
       } catch (e) {
-        // Series optional
+        console.warn("[XTREAM] get_series fetch failed:", e.message);
       }
     }
   }
@@ -220,9 +246,10 @@ async function fetchData(addonInstance) {
       : `${xtreamUrl}/xmltv.php?username=${encodeURIComponent(xtreamUsername)}&password=${encodeURIComponent(xtreamPassword)}`;
 
     try {
-      const epgResp = await fetch(epgSource, { timeout: 45000 });
+      const epgResp = await timedFetch(epgSource, { timeout: 45000 }, "epg");
       if (epgResp.ok) {
         const epgContent = await epgResp.text();
+        _xlog("epg bytes:", epgContent.length);
         addonInstance.epgData = await addonInstance.parseEPG(epgContent);
       }
     } catch {
@@ -245,9 +272,10 @@ async function fetchSeriesInfo(addonInstance, seriesId) {
 
   const base = `${config.xtreamUrl}/player_api.php?username=${encodeURIComponent(config.xtreamUsername)}&password=${encodeURIComponent(config.xtreamPassword)}`;
   try {
-    const infoResp = await fetch(
+    const infoResp = await timedFetch(
       `${base}&action=get_series_info&series_id=${encodeURIComponent(seriesId)}`,
       { timeout: 25000 },
+      "series_info",
     );
     if (!infoResp.ok) return { videos: [] };
     const infoJson = await infoResp.json();

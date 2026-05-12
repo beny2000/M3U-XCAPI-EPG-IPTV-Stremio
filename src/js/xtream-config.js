@@ -298,6 +298,33 @@
       vodCount = Array.isArray(vodList) ? vodList.length : 0;
       appendDetail(`✔ VOD streams: ${vodCount.toLocaleString()}`);
 
+      setProgress(36, "Fetching Series");
+      let seriesCount = 0;
+      try {
+        let seriesJsonText;
+        try {
+          seriesJsonText = await robustFetch(
+            `${base}&action=get_series`,
+            "series",
+            true,
+          );
+        } catch {
+          seriesJsonText = await robustFetch(
+            `${base}&action=get_series`,
+            "series",
+            false,
+          );
+        }
+        let seriesList = [];
+        try {
+          seriesList = JSON.parse(seriesJsonText);
+        } catch { /* ignore */ }
+        seriesCount = Array.isArray(seriesList) ? seriesList.length : 0;
+        appendDetail(`✔ Series: ${seriesCount.toLocaleString()}`);
+      } catch (e) {
+        appendDetail(`⚠ Series fetch failed: ${e.message}`);
+      }
+
       if (Array.isArray(liveList)) {
         for (const l of liveList) {
           const c = l.category_name || l.category || "";
@@ -318,7 +345,7 @@
             ? customEpgUrlInp.value.trim()
             : `${baseUrl}/xmltv.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
 
-        setProgress(44, "Fetching EPG");
+        setProgress(50, "Fetching EPG");
         let epgTxt = null;
         try {
           try {
@@ -378,6 +405,7 @@
       config.prescan = {
         liveCount,
         vodCount,
+        seriesCount,
         categoryCount: categories.size,
         epgProgrammes: enableEpgFinal ? epgStats.programmes : 0,
         epgChannels: enableEpgFinal ? epgStats.channels : 0,

@@ -53,6 +53,7 @@ async function redisGetJSON(key) {
     if (!redisClient) return null;
     try {
         const raw = await redisClient.get(key);
+        if (DEBUG_ENV) console.log('[REDIS] GET', key, '->', raw ? 'HIT' : 'MISS');
         if (!raw) return null;
         return JSON.parse(raw);
     } catch { return null; }
@@ -60,6 +61,7 @@ async function redisGetJSON(key) {
 async function redisSetJSON(key, value, ttl) {
     if (!redisClient) return;
     try {
+        if (DEBUG_ENV) console.log('[REDIS] SET', key, `ttl=${ttl}ms`);
         await redisClient.set(key, JSON.stringify(value), 'PX', ttl);
     } catch { /* ignore */ }
 }
@@ -75,7 +77,10 @@ async function lookupIMDBtoTMDB(imdbId, config, log) {
     
     try {
         const url = `https://api.themoviedb.org/3/find/${encodeURIComponent(imdbId)}?external_source=imdb_id&api_key=${TMDB_API_KEY}`;
+        const t0 = Date.now();
+        if (DEBUG_ENV) console.log('[TMDB] → find', imdbId);
         const resp = await fetch(url, { timeout: 10000 });
+        if (DEBUG_ENV) console.log('[TMDB] ← find', imdbId, resp.status, `${Date.now() - t0}ms`);
         if (!resp.ok) {
             log?.warn('TMDB lookup failed', imdbId, resp.status);
             return null;
@@ -834,28 +839,47 @@ async function createAddon(config) {
         builder.defineStreamHandler(async ({ type, id }) => {
             try {
                 if (id.startsWith('tt')) {
-                    if (!TMDB_API_KEY) {
-                        return { streams: [] };
-                    }
-                    
                     let imdbId = id;
                     let season = null;
                     let episode = null;
-                    
+
                     if (id.includes(':')) {
                         const parts = id.split(':');
                         imdbId = parts[0];
                         season = parseInt(parts[1], 10);
                         episode = parseInt(parts[2], 10);
                     }
-                    
+
+                    // Fast path: direct imdb_id match in memory (no TMDB API key needed)
+                    if (!season) {
+                        const directMovie = addonInstance.movies.find(m => m.imdb_id === imdbId);
+                        if (directMovie) {
+                            addonInstance.log.debug('Stream: direct imdb_id match', imdbId, directMovie.id);
+                            return { streams: [{ url: directMovie.url, title: directMovie.name, behaviorHints: { notWebReady: true } }] };
+                        }
+                    }
+
+                    if (!TMDB_API_KEY) {
+                        return { streams: [] };
+                    }
+
                     const tmdbId = await lookupIMDBtoTMDB(imdbId, addonInstance.config, addonInstance.log);
                     if (!tmdbId) {
                         return { streams: [] };
                     }
-                    
+
                     const providerKey = db.createProviderKey(addonInstance.config);
-                    const streamData = db.getTMDBStreams(providerKey, tmdbId);
+                    let streamData = db.getTMDBStreams(providerKey, tmdbId);
+
+                    // In-memory tmdb_id fallback when SQLite cache is cold
+                    if (!streamData && !season) {
+                        const memMovie = addonInstance.movies.find(m => m.tmdb_id === tmdbId);
+                        if (memMovie) {
+                            addonInstance.log.debug('Stream: in-memory tmdb_id fallback', tmdbId, memMovie.id);
+                            return { streams: [{ url: memMovie.url, title: memMovie.name, behaviorHints: { notWebReady: true } }] };
+                        }
+                    }
+
                     if (!streamData) {
                         return { streams: [] };
                     }
