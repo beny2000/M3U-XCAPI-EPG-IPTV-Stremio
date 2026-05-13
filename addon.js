@@ -101,49 +101,36 @@ function buildTMDBStreamCache(addonInstance) {
     const { movies, series, config } = addonInstance;
     const { xtreamUrl, xtreamUsername, xtreamPassword } = config;
     const providerKey = db.createProviderKey(config);
-    
+
+    db.clearProviderStreams(providerKey);
+
+    // Group movies by tmdb_id so multiple variants (dubs, quality tiers) are collected in one write
+    const movieMap = new Map();
     for (const movie of movies) {
-        if (movie.tmdb_id) {
-            const streamUrl = `${xtreamUrl}/movie/${xtreamUsername}/${xtreamPassword}/${movie.stream_id || movie.id.replace('iptv_vod_', '')}.${movie.container_extension || 'mkv'}`;
-            
-            const existing = db.getTMDBStreams(providerKey, movie.tmdb_id);
-            if (existing && existing.type === 'movie' && existing.streams) {
-                if (!existing.streams.some(s => s.url === streamUrl)) {
-                    existing.streams.push({
-                        url: streamUrl,
-                        title: movie.category ? `${movie.name} (${movie.category})` : movie.name,
-                        quality: movie.quality || null
-                    });
-                    db.setTMDBStreams(providerKey, movie.tmdb_id, 'movie', { streams: existing.streams });
-                }
-            } else {
-                db.setTMDBStreams(providerKey, movie.tmdb_id, 'movie', {
-                    streams: [{
-                        url: streamUrl,
-                        title: movie.category ? `${movie.name} (${movie.category})` : movie.name,
-                        quality: movie.quality || null
-                    }]
-                });
-            }
-        }
+        if (!movie.tmdb_id) continue;
+        const streamUrl = `${xtreamUrl}/movie/${xtreamUsername}/${xtreamPassword}/${movie.stream_id || movie.id.replace('iptv_vod_', '')}.${movie.container_extension || 'mkv'}`;
+        if (!movieMap.has(movie.tmdb_id)) movieMap.set(movie.tmdb_id, []);
+        movieMap.get(movie.tmdb_id).push({
+            url: streamUrl,
+            title: movie.category ? `${movie.name} (${movie.category})` : movie.name,
+            quality: movie.quality || null
+        });
     }
-    
+    for (const [tmdbId, streams] of movieMap) {
+        db.setTMDBStreams(providerKey, tmdbId, 'movie', { streams });
+    }
+
+    // Group series by tmdb_id
+    const seriesMap = new Map();
     for (const s of series) {
-        if (s.tmdb_id) {
-            const seriesId = s.series_id || s.id.replace('iptv_series_', '');
-            const existing = db.getTMDBStreams(providerKey, s.tmdb_id);
-            if (existing && existing.type === 'series' && existing.seriesIds) {
-                if (!existing.seriesIds.includes(seriesId)) {
-                    existing.seriesIds.push(seriesId);
-                }
-                db.setTMDBStreams(providerKey, s.tmdb_id, 'series', { seriesIds: existing.seriesIds, title: existing.title || (s.category ? `${s.name} (${s.category})` : s.name) });
-            } else {
-                db.setTMDBStreams(providerKey, s.tmdb_id, 'series', {
-                    seriesIds: [seriesId],
-                    title: s.category ? `${s.name} (${s.category})` : s.name
-                });
-            }
-        }
+        if (!s.tmdb_id) continue;
+        const seriesId = s.series_id || s.id.replace('iptv_series_', '');
+        if (!seriesMap.has(s.tmdb_id)) seriesMap.set(s.tmdb_id, { seriesIds: [], title: s.category ? `${s.name} (${s.category})` : s.name });
+        const entry = seriesMap.get(s.tmdb_id);
+        if (!entry.seriesIds.includes(seriesId)) entry.seriesIds.push(seriesId);
+    }
+    for (const [tmdbId, { seriesIds, title }] of seriesMap) {
+        db.setTMDBStreams(providerKey, tmdbId, 'series', { seriesIds, title });
     }
     
     const stats = db.getCacheStats(providerKey);
@@ -770,11 +757,7 @@ async function createAddon(config) {
             console.error('[ADDON] Initial update failed:', e);
         }
         addonInstance.buildGenresInManifest();
-        
-        if (TMDB_API_KEY) {
-            buildTMDBStreamCache(addonInstance);
-        }
-        
+
         // Pass the fully populated manifest to builder
         // IMPORTANT: We must ensure 'manifest' object has 'catalogs[].genres' populated BEFORE creating builder
         const builder = new addonBuilder(manifest); 

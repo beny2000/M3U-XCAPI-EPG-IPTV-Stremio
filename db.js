@@ -87,6 +87,11 @@ function clearAllCache() {
     console.log('[SQLITE] Cache cleared');
 }
 
+function clearProviderStreams(providerKey) {
+    _dblog('clearProviderStreams', providerKey);
+    getDb().prepare('DELETE FROM tmdb_streams WHERE provider_key = ?').run(providerKey);
+}
+
 function getCacheStats(providerKey) {
     const db = getDb();
     let imdbCount, streamCount, movieCount, seriesCount;
@@ -124,6 +129,7 @@ module.exports = {
     getTMDBStreams,
     setTMDBStreams,
     clearAllCache,
+    clearProviderStreams,
     getCacheStats,
     createProviderKey
 };
