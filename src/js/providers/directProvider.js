@@ -6,6 +6,9 @@
 const fetch = require('node-fetch');
 const crypto = require('crypto');
 
+const _DP_DEBUG = (process.env.DEBUG_MODE || '').toLowerCase() === 'true';
+function _dplog(...a) { if (_DP_DEBUG) console.log('[DIRECT]', ...a); }
+
 function hash(str) {
     return crypto.createHash('md5').update(str).digest('hex').slice(0, 16);
 }
@@ -51,6 +54,8 @@ async function fetchData(addonInstance) {
     {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 45000);
+        const t0 = Date.now();
+        _dplog('→ m3u', m3uUrl);
         try {
             const resp = await fetch(m3uUrl, {
                 signal: controller.signal,
@@ -58,6 +63,7 @@ async function fetchData(addonInstance) {
             });
             if (!resp.ok) throw new Error(`M3U fetch failed (${resp.status})`);
             playlistText = await resp.text();
+            _dplog('← m3u', resp.status, `${playlistText.length} bytes`, `${Date.now() - t0}ms`);
         } finally {
             clearTimeout(timeout);
         }
@@ -130,6 +136,8 @@ async function fetchData(addonInstance) {
         try {
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 45000);
+            const t0 = Date.now();
+            _dplog('→ epg', config.epgUrl);
             let epgResp;
             try {
                 epgResp = await fetch(config.epgUrl, {
@@ -141,6 +149,7 @@ async function fetchData(addonInstance) {
             }
             if (epgResp && epgResp.ok) {
                 const epgContent = await epgResp.text();
+                _dplog('← epg', epgResp.status, `${epgContent.length} bytes`, `${Date.now() - t0}ms`);
                 addonInstance.epgData = await addonInstance.parseEPG(epgContent);
             }
         } catch {

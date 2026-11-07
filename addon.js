@@ -53,6 +53,7 @@ async function redisGetJSON(key) {
     if (!redisClient) return null;
     try {
         const raw = await redisClient.get(key);
+        if (DEBUG_ENV) console.log('[REDIS] GET', key, '->', raw ? 'HIT' : 'MISS');
         if (!raw) return null;
         return JSON.parse(raw);
     } catch { return null; }
@@ -60,6 +61,7 @@ async function redisGetJSON(key) {
 async function redisSetJSON(key, value, ttl) {
     if (!redisClient) return;
     try {
+        if (DEBUG_ENV) console.log('[REDIS] SET', key, `ttl=${ttl}ms`);
         await redisClient.set(key, JSON.stringify(value), 'PX', ttl);
     } catch { /* ignore */ }
 }
@@ -75,7 +77,10 @@ async function lookupIMDBtoTMDB(imdbId, config, log) {
     
     try {
         const url = `https://api.themoviedb.org/3/find/${encodeURIComponent(imdbId)}?external_source=imdb_id&api_key=${TMDB_API_KEY}`;
+        const t0 = Date.now();
+        if (DEBUG_ENV) console.log('[TMDB] → find', imdbId);
         const resp = await fetch(url, { timeout: 10000 });
+        if (DEBUG_ENV) console.log('[TMDB] ← find', imdbId, resp.status, `${Date.now() - t0}ms`);
         if (!resp.ok) {
             log?.warn('TMDB lookup failed', imdbId, resp.status);
             return null;
@@ -96,49 +101,36 @@ function buildTMDBStreamCache(addonInstance) {
     const { movies, series, config } = addonInstance;
     const { xtreamUrl, xtreamUsername, xtreamPassword } = config;
     const providerKey = db.createProviderKey(config);
-    
+
+    db.clearProviderStreams(providerKey);
+
+    // Group movies by tmdb_id so multiple variants (dubs, quality tiers) are collected in one write
+    const movieMap = new Map();
     for (const movie of movies) {
-        if (movie.tmdb_id) {
-            const streamUrl = `${xtreamUrl}/movie/${xtreamUsername}/${xtreamPassword}/${movie.stream_id || movie.id.replace('iptv_vod_', '')}.${movie.container_extension || 'mkv'}`;
-            
-            const existing = db.getTMDBStreams(providerKey, movie.tmdb_id);
-            if (existing && existing.type === 'movie' && existing.streams) {
-                if (!existing.streams.some(s => s.url === streamUrl)) {
-                    existing.streams.push({
-                        url: streamUrl,
-                        title: movie.category ? `${movie.name} (${movie.category})` : movie.name,
-                        quality: movie.quality || null
-                    });
-                    db.setTMDBStreams(providerKey, movie.tmdb_id, 'movie', { streams: existing.streams });
-                }
-            } else {
-                db.setTMDBStreams(providerKey, movie.tmdb_id, 'movie', {
-                    streams: [{
-                        url: streamUrl,
-                        title: movie.category ? `${movie.name} (${movie.category})` : movie.name,
-                        quality: movie.quality || null
-                    }]
-                });
-            }
-        }
+        if (!movie.tmdb_id) continue;
+        const streamUrl = `${xtreamUrl}/movie/${xtreamUsername}/${xtreamPassword}/${movie.stream_id || movie.id.replace('iptv_vod_', '')}.${movie.container_extension || 'mkv'}`;
+        if (!movieMap.has(movie.tmdb_id)) movieMap.set(movie.tmdb_id, []);
+        movieMap.get(movie.tmdb_id).push({
+            url: streamUrl,
+            title: movie.category ? `${movie.name} (${movie.category})` : movie.name,
+            quality: movie.quality || null
+        });
     }
-    
+    for (const [tmdbId, streams] of movieMap) {
+        db.setTMDBStreams(providerKey, tmdbId, 'movie', { streams });
+    }
+
+    // Group series by tmdb_id
+    const seriesMap = new Map();
     for (const s of series) {
-        if (s.tmdb_id) {
-            const seriesId = s.series_id || s.id.replace('iptv_series_', '');
-            const existing = db.getTMDBStreams(providerKey, s.tmdb_id);
-            if (existing && existing.type === 'series' && existing.seriesIds) {
-                if (!existing.seriesIds.includes(seriesId)) {
-                    existing.seriesIds.push(seriesId);
-                }
-                db.setTMDBStreams(providerKey, s.tmdb_id, 'series', { seriesIds: existing.seriesIds, title: existing.title || (s.category ? `${s.name} (${s.category})` : s.name) });
-            } else {
-                db.setTMDBStreams(providerKey, s.tmdb_id, 'series', {
-                    seriesIds: [seriesId],
-                    title: s.category ? `${s.name} (${s.category})` : s.name
-                });
-            }
-        }
+        if (!s.tmdb_id) continue;
+        const seriesId = s.series_id || s.id.replace('iptv_series_', '');
+        if (!seriesMap.has(s.tmdb_id)) seriesMap.set(s.tmdb_id, { seriesIds: [], title: s.category ? `${s.name} (${s.category})` : s.name });
+        const entry = seriesMap.get(s.tmdb_id);
+        if (!entry.seriesIds.includes(seriesId)) entry.seriesIds.push(seriesId);
+    }
+    for (const [tmdbId, { seriesIds, title }] of seriesMap) {
+        db.setTMDBStreams(providerKey, tmdbId, 'series', { seriesIds, title });
     }
     
     const stats = db.getCacheStats(providerKey);
@@ -765,11 +757,7 @@ async function createAddon(config) {
             console.error('[ADDON] Initial update failed:', e);
         }
         addonInstance.buildGenresInManifest();
-        
-        if (TMDB_API_KEY) {
-            buildTMDBStreamCache(addonInstance);
-        }
-        
+
         // Pass the fully populated manifest to builder
         // IMPORTANT: We must ensure 'manifest' object has 'catalogs[].genres' populated BEFORE creating builder
         const builder = new addonBuilder(manifest); 
@@ -834,28 +822,62 @@ async function createAddon(config) {
         builder.defineStreamHandler(async ({ type, id }) => {
             try {
                 if (id.startsWith('tt')) {
-                    if (!TMDB_API_KEY) {
-                        return { streams: [] };
-                    }
-                    
                     let imdbId = id;
                     let season = null;
                     let episode = null;
-                    
+
                     if (id.includes(':')) {
                         const parts = id.split(':');
                         imdbId = parts[0];
                         season = parseInt(parts[1], 10);
                         episode = parseInt(parts[2], 10);
                     }
-                    
+
+                    // Fast path: direct imdb_id match in memory (no TMDB API key needed).
+                    // When tmdb_id is present we backfill SQLite so the entry survives a restart.
+                    // Items with imdb_id but no tmdb_id are not backfilled and require TMDB_API_KEY after restart.
+                    if (!season) {
+                        const directMovie = addonInstance.movies.find(m => m.imdb_id === imdbId);
+                        if (directMovie) {
+                            addonInstance.log.debug('Stream: direct imdb_id match', imdbId, directMovie.id);
+                            if (directMovie.tmdb_id) {
+                                const provKey = db.createProviderKey(addonInstance.config);
+                                if (!db.getIMDBtoTMDB(provKey, imdbId)) {
+                                    db.setIMDBtoTMDB(provKey, imdbId, directMovie.tmdb_id);
+                                }
+                                if (!db.getTMDBStreams(provKey, directMovie.tmdb_id)) {
+                                    db.setTMDBStreams(provKey, directMovie.tmdb_id, 'movie', {
+                                        streams: [{ url: directMovie.url, title: directMovie.name, behaviorHints: { notWebReady: true } }]
+                                    });
+                                }
+                            }
+                            return { streams: [{ url: directMovie.url, title: directMovie.name, behaviorHints: { notWebReady: true } }] };
+                        }
+                    }
+
+                    if (!TMDB_API_KEY) {
+                        return { streams: [] };
+                    }
+
                     const tmdbId = await lookupIMDBtoTMDB(imdbId, addonInstance.config, addonInstance.log);
                     if (!tmdbId) {
                         return { streams: [] };
                     }
-                    
+
                     const providerKey = db.createProviderKey(addonInstance.config);
-                    const streamData = db.getTMDBStreams(providerKey, tmdbId);
+                    let streamData = db.getTMDBStreams(providerKey, tmdbId);
+
+                    // In-memory tmdb_id fallback when SQLite cache is cold — return all matches
+                    if (!streamData && !season) {
+                        const memMovies = addonInstance.movies.filter(m => m.tmdb_id === tmdbId);
+                        if (memMovies.length > 0) {
+                            addonInstance.log.debug('Stream: in-memory tmdb_id fallback', tmdbId, memMovies.length);
+                            const streams = memMovies.map(m => ({ url: m.url, title: m.name, behaviorHints: { notWebReady: true } }));
+                            db.setTMDBStreams(providerKey, tmdbId, 'movie', { streams });
+                            return { streams };
+                        }
+                    }
+
                     if (!streamData) {
                         return { streams: [] };
                     }

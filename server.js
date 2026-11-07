@@ -271,7 +271,9 @@ app.use("/:token", async (req, res, next) => {
   async function redisGet(key) {
     if (!CACHE_ENABLED || !redisClient) return null;
     try {
-      return await redisClient.get(key);
+      const val = await redisClient.get(key);
+      dlog("Redis GET", key, "->", val ? "HIT" : "MISS");
+      return val;
     } catch {
       return null;
     }
@@ -279,6 +281,7 @@ app.use("/:token", async (req, res, next) => {
   async function redisSet(key, ttl) {
     if (!CACHE_ENABLED || !redisClient) return;
     try {
+      dlog("Redis SET", key, `ttl=${ttl}ms`);
       await redisClient.set(key, "1", "PX", ttl);
     } catch {}
   }
