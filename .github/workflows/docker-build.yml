@@ -2,7 +2,7 @@ name: Build and push Docker image
 
 on:
   push:
-    branches: [main, dev/stream-provider]
+    branches: [stream-provider]
     tags: ["v*"]
   workflow_dispatch: {}
 
@@ -32,7 +32,7 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=sha
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/dev/stream-provider' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/stream-provider' }}
 
       - uses: docker/build-push-action@v6
         with:
