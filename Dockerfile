@@ -1,6 +1,8 @@
 # Use official Node.js LTS image
 FROM node:18-alpine
 
+LABEL org.opencontainers.image.source=https://github.com/beny2000/M3U-XCAPI-EPG-IPTV-Stremio
+
 # Install build tools for native modules (better-sqlite3)
 RUN apk add --no-cache python3 make g++
 
